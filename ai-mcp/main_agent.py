@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 MAX_TOOL_ROUNDS = 8
 
 
@@ -158,6 +159,61 @@ def _mcp_tool_result_to_jsonable(result: Any) -> dict[str, Any]:
     }
 
 
+
+def _extract_employee_id(message: str) -> str | None:
+    """Best-effort employee ID parser for quota-safe demo fallback."""
+    match = re.search(r"\bE\d+\b", message, flags=re.IGNORECASE)
+    return match.group(0).upper() if match else None
+
+
+def _extract_device_model(message: str) -> str | None:
+    """Best-effort device model parser for common demo hardware names."""
+    known_models = ["Dell XPS 15", "Dell XPS", "MacBook Pro", "ThinkPad", "Surface Pro"]
+    lower_message = message.lower()
+    for model in known_models:
+        if model.lower() in lower_message:
+            return model
+    return None
+
+
+def _build_escalation_summary(message: str) -> str:
+    """Create a concise technician hand-off summary without calling Gemini."""
+    return (
+        "- User requested hardware escalation.\n"
+        f"- User report: {message}\n"
+        "- Basic restart/software troubleshooting did not resolve the issue.\n"
+        "- Physical hardware damage suspected; human technician inspection required."
+    )
+
+
+async def _try_quota_safe_fallback(session: ClientSession, user_message: str) -> bool:
+    """Call MCP directly for obvious demo escalations when Gemini quota is unavailable."""
+    lower_message = user_message.lower()
+    wants_escalation = "escalate" in lower_message or "ticket" in lower_message
+    if not wants_escalation:
+        return False
+
+    employee_id = _extract_employee_id(user_message)
+    device_model = _extract_device_model(user_message)
+    if not employee_id or not device_model:
+        print(
+            "\nAgent: Gemini is unavailable, and I could not safely extract employee_id/device_model for fallback escalation.\n"
+        )
+        return True
+
+    tool_args = {
+        "employee_id": employee_id,
+        "device_model": device_model,
+        "ai_diagnostic_summary": _build_escalation_summary(user_message),
+    }
+    print("\n[Fallback tool call] escalate_hardware_ticket")
+    tool_result = await session.call_tool("escalate_hardware_ticket", arguments=tool_args)
+    jsonable_result = _mcp_tool_result_to_jsonable(tool_result)
+    print(f"[Fallback tool result] {json.dumps(jsonable_result, ensure_ascii=False)}")
+    print(
+        "\nAgent: Gemini quota is unavailable, so I used the fallback demo path and escalated the ticket through MCP.\n"
+    )
+    return True
 def _print_response_text(response: Any) -> None:
     """Print Gemini's final user-facing response, with a small fallback."""
     text = getattr(response, "text", None)
@@ -297,8 +353,11 @@ async def main() -> None:
                     print("\nGoodbye.")
                     return
                 except Exception as exc:
-                    print(f"\nAgent error: {exc}\n")
+                    handled = await _try_quota_safe_fallback(session, user_message)
+                    if not handled:
+                        print(f"\nAgent error: {exc}\n")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

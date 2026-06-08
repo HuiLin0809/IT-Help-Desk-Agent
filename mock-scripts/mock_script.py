@@ -17,7 +17,7 @@ def trigger_mock_alert():
     
     # Connect to your Atlas cluster
     client = MongoClient(MONGODB_URI)
-    db = client.IT_HelpDesk 
+    db = client["it_helpdesk_db"]
     
     # We will send the alert to a new collection specifically for telemetry alerts
     alerts_collection = db.System_Alerts 

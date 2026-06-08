@@ -72,7 +72,7 @@ def listen_for_alerts():
     ai_client = genai.Client()
 
     db_client = MongoClient(MONGODB_URI)
-    db = db_client.IT_HelpDesk
+    db = db_client["it_helpdesk_db"]
     alerts_collection = db.System_Alerts
     notifications_collection = db.User_Notifications
 

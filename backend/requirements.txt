@@ -2,3 +2,5 @@ google-genai
 mcp[cli]
 pymongo
 python-dotenv
+fastapi
+uvicorn
