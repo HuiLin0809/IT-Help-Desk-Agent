@@ -3,166 +3,248 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI IT Help Desk — Enterprise Hub</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="styles.css">
+    <title>IT Help Desk - AI Chat Agent</title>
+    <style>
+        :root {
+            --bg-color: #f4f6f9;
+            --chat-bg: #ffffff;
+            --primary-color: #1a73e8;
+            --user-msg: #e8f0fe;
+            --agent-msg: #f1f3f4;
+            --text-color: #3c4043;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 600px;
+            height: 80vh;
+            background: var(--chat-bg);
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: var(--primary-color);
+            color: white;
+            padding: 15px 20px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .status-indicator {
+            font-size: 0.8rem;
+            background: #34a853;
+            padding: 4px 8px;
+            border-radius: 12px;
+            color: white;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .message {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            background-color: var(--user-msg);
+            align-self: flex-end;
+            color: #155724;
+            border-bottom-right-radius: 2px;
+        }
+
+        .message.agent {
+            background-color: var(--agent-msg);
+            align-self: flex-start;
+            color: var(--text-color);
+            border-bottom-left-radius: 2px;
+        }
+
+        .message.system {
+            background-color: #fef7e0;
+            color: #b06000;
+            align-self: center;
+            font-size: 0.85rem;
+            text-align: center;
+            max-width: 90%;
+        }
+
+        .chat-input-area {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid #e0e0e0;
+            background: #fafafa;
+            gap: 10px;
+        }
+
+        .chat-input-area input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input-area input:focus {
+            border-color: var(--primary-color);
+        }
+
+        .chat-input-area button {
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 0 20px;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        .chat-input-area button:hover {
+            background: #1557b0;
+        }
+
+        .chat-input-area button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+    </style>
 </head>
 <body>
 
-    <div id="alert-toast-container" class="toast-container"></div>
-
-    <header class="app-header">
-        <div class="logo-area">
-            <div class="brand-logo">
-                <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="32" height="32" rx="8" fill="url(#logo-grad)"/>
-                    <path d="M9 10C9 9.44772 9.44772 9 10 9H22C22.5523 9 23 9.44772 23 10V22C23 22.5523 22.5523 23 22 23H10C9.44772 23 9 22.5523 9 22V10Z" stroke="white" stroke-width="2" stroke-linecap="round"/>
-                    <path d="M13 14L16 17L20 12" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <circle cx="16" cy="16" r="3" fill="#00ED64" opacity="0.4"/>
-                    <defs>
-                        <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                            <stop stop-color="#001E2B"/>
-                            <stop offset="1" stop-color="#00684A"/>
-                        </linearGradient>
-                    </defs>
-                </svg>
-            </div>
-            <div class="brand-text">
-                <h1>Group 4 IT <span class="badge-tech">Agent Hub</span></h1>
-                <p>Autonomous Fleet Operations & Telemetry Monitoring</p>
-            </div>
+    <div class="chat-container">
+        <div class="chat-header">
+            <span>IT Help Desk Agent</span>
+            <span class="status-indicator" id="statusLabel">Connected</span>
         </div>
-        <nav class="view-switcher">
-            <button id="btn-user-view" class="nav-btn active"><i class="fa-solid fa-headset"></i> User Chat Portal</button>
-            <button id="btn-tech-view" class="nav-btn"><i class="fa-solid fa-gauge-high"></i> Technician Control Room</button>
-        </nav>
-    </header>
-
-    <main class="workspace-container">
         
-        <section id="panel-user-view" class="workspace-panel active">
-            <div class="chat-layout">
-                <aside class="meta-sidebar">
-                    <div class="card employee-card">
-                        <h3><i class="fa-solid fa-id-badge"></i> Session Context</h3>
-                        <div class="meta-row">
-                            <span class="lbl">Employee ID:</span>
-                            <span class="val text-highlight">E1402</span>
-                        </div>
-                        <div class="meta-row">
-                            <span class="lbl">Assigned Asset:</span>
-                            <span class="val">Dell XPS 15</span>
-                        </div>
-                        <div class="meta-row">
-                            <span class="lbl">Database Stream:</span>
-                            <span class="status-indicator active">Connected</span>
-                        </div>
-                    </div>
+        <div class="chat-messages" id="chatMessages">
+            <div class="message agent">Hello! I am your automated IT support assistant. How can I help resolve your system or hardware issues today?</div>
+        </div>
 
-                    <div class="card diagnostic-card">
-                        <h3><i class="fa-solid fa-microchip"></i> Live Device Diagnostics</h3>
-                        <div class="telemetry-bar-group">
-                            <div class="bar-lbl"><span>Core Temperature</span><span id="txt-temp">42°C</span></div>
-                            <div class="bar-bg"><div id="bar-temp" class="bar-fill success" style="width: 42%;"></div></div>
-                        </div>
-                        <div class="telemetry-bar-group">
-                            <div class="bar-lbl"><span>SSD Capacity (Used)</span><span id="txt-disk">96%</span></div>
-                            <div class="bar-bg"><div id="bar-disk" class="bar-fill danger" style="width: 96%;"></div></div>
-                        </div>
-                        <div class="telemetry-bar-group">
-                            <div class="bar-lbl"><span>Fan Profile Speed</span><span id="txt-fan">2400 RPM</span></div>
-                            <div class="bar-bg"><div id="bar-fan" class="bar-fill warning" style="width: 35%;"></div></div>
-                        </div>
-                    </div>
+        <div class="chat-input-area">
+            <input type="text" id="userInput" placeholder="Type your technical problem details here..." autocomplete="off">
+            <button id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
 
-                    <div class="demo-controller card">
-                        <h4><i class="fa-solid fa-wand-magic-sparkles"></i> Evaluation Simulations</h4>
-                        <p class="small-text">Force background system changes to inspect automated app alert triggers.</p>
-                        <button id="sim-trigger-alert" class="action-btn-outline alert-trigger"><i class="fa-solid fa-bell-radiation"></i> Inject 96% Storage Alert</button>
-                        <button id="sim-trigger-heat" class="action-btn-outline heat-trigger"><i class="fa-solid fa-fire"></i> Inject Fan Bearing Failure</button>
-                    </div>
-                </aside>
+    <script>
+        const chatMessages = document.getElementById('chatMessages');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const statusLabel = document.getElementById('statusLabel');
 
-                <div class="chat-terminal">
-                    <div id="chat-messages-box" class="chat-conversation-history">
-                        <div class="message system-msg">
-                            <div class="avatar"><i class="fa-solid fa-robot"></i></div>
-                            <div class="message-body">
-                                <div class="sender-name">Enterprise Grounded AI Agent</div>
-                                <p>Welcome back! I have parsed your unique hardware logs through our active MongoDB MCP Server setup. Let me know if you are facing any local environment bottlenecks or laptop overheating anomalies.</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <form id="chat-input-form" class="chat-input-row">
-                        <input type="text" id="chat-user-field" placeholder="Describe your workspace issue in natural language (e.g. 'My fan is spinning incredibly fast')..." autocomplete="off" required />
-                        <button type="submit" class="submit-btn"><i class="fa-solid fa-paper-plane"></i></button>
-                    </form>
-                </div>
-            </div>
-        </section>
+        // Allow pressing Enter key to trigger send button
+        userInput.addEventListener("keyup", function(event) {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                sendBtn.click();
+            }
+        });
 
-        <section id="panel-tech-view" class="workspace-panel">
-            <div class="tech-dashboard-grid">
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            // 1. Display user message immediately in UI
+            appendMessage(text, 'user');
+            userInput.value = ''; // Clear input field
+            
+            // Set sending UI states
+            setLoadingState(true);
+
+            try {
+                // 2. Perform Fetch Request to Flask App Engine Backend
+                // Note: We use the exact schema keys matching your Flask backend requirements
+                const response = await fetch('http://127.0.0.1:5000/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        message: text 
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server returned HTTP status ${response.status}`);
+                }
+
+                const data = await response.json();
                 
-                <div class="metric-row">
-                    <div class="metric-card">
-                        <div class="icon-wrap warning"><i class="fa-solid fa-triangle-exclamation"></i></div>
-                        <div class="stat"><h3>2</h3><p>Active Escalations</p></div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="icon-wrap success"><i class="fa-solid fa-clipboard-check"></i></div>
-                        <div class="stat"><h3>142</h3><p>Resolved by AI</p></div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="icon-wrap primary"><i class="fa-solid fa-bolt"></i></div>
-                        <div class="stat"><h3>98.6%</h3><p>AI Deflection Accuracy</p></div>
-                    </div>
-                </div>
+                // 3. Render the output coming from your main_agent response context
+                if (data && data.response) {
+                    appendMessage(data.response, 'agent');
+                } else if (data && data.reply) {
+                    appendMessage(data.reply, 'agent');
+                } else {
+                    // Fallback to match primitive text string returns
+                    appendMessage(JSON.stringify(data), 'agent');
+                }
 
-                <div class="card table-card">
-                    <div class="card-header-flex">
-                        <h2><i class="fa-solid fa-layer-group"></i> Active High-Priority Hardware Tickets (Level-2 Escalations)</h2>
-                        <span class="badge-counter">2 Tickets Found</span>
-                    </div>
-                    <div class="table-responsive">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Incident ID</th>
-                                    <th>Employee</th>
-                                    <th>Device Model</th>
-                                    <th>Status</th>
-                                    <th>AI Diagnostic Summary & Hand-off Context</th>
-                                    <th>Timestamp</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tech-tickets-tbody">
-                                <tr>
-                                    <td><code>TK-9082</code></td>
-                                    <td><strong>E8941</strong></td>
-                                    <td>MacBook Pro</td>
-                                    <td><span class="status-pill escalated">Escalated</span></td>
-                                    <td>
-                                        <div class="ai-summary-box">
-                                            <ul>
-                                                <li>User reported battery draining 40% per hour during local docker test cycles.</li>
-                                                <li>Historical read tool outputs reveal 812 battery cycles recorded (Throttling active).</li>
-                                                <li>Software fixes and profile calibrations complete; physical power cell replacement recommended.</li>
-                                            </ul>
-                                        </div>
-                                    </td>
-                                    <td>10 mins ago</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </section>
-    </main>
+            } catch (error) {
+                console.error("Communication error with backend agent:", error);
+                appendMessage("System Alert: Connection failed to reach the AI Agent backend. Make sure your Flask local development server is active.", 'system');
+            } finally {
+                setLoadingState(false);
+            }
+        }
 
-    <script src="app.js"></script>
+        function appendMessage(text, sender) {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('message', sender);
+            msgDiv.textContent = text;
+            chatMessages.appendChild(msgDiv);
+            
+            // Ensure container auto-scrolls down to show recent text records
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function setLoadingState(isLoading) {
+            if (isLoading) {
+                sendBtn.disabled = true;
+                sendBtn.textContent = "Processing...";
+                statusLabel.textContent = "AI is thinking...";
+                statusLabel.style.background = "#f4b400";
+            } else {
+                sendBtn.disabled = false;
+                sendBtn.textContent = "Send";
+                statusLabel.textContent = "Connected";
+                statusLabel.style.background = "#34a853";
+            }
+        }
+    </script>
 </body>
 </html>
