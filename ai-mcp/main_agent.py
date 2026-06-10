@@ -159,7 +159,6 @@ def _mcp_tool_result_to_jsonable(result: Any) -> dict[str, Any]:
     }
 
 
-
 def _extract_employee_id(message: str) -> str | None:
     """Best-effort employee ID parser for quota-safe demo fallback."""
     match = re.search(r"\bE\d+\b", message, flags=re.IGNORECASE)
@@ -214,6 +213,8 @@ async def _try_quota_safe_fallback(session: ClientSession, user_message: str) ->
         "\nAgent: Gemini quota is unavailable, so I used the fallback demo path and escalated the ticket through MCP.\n"
     )
     return True
+
+
 def _print_response_text(response: Any) -> None:
     """Print Gemini's final user-facing response, with a small fallback."""
     text = getattr(response, "text", None)
@@ -301,6 +302,58 @@ async def process_user_message(
     )
 
 
+# =====================================================================
+# ADDED BRIDGING FUNCTION FOR THE API BACKEND SERVER / WEB FRONTEND
+# =====================================================================
+async def run_agent_turn_anonymous(user_prompt: str, employee_id: str = "E1402") -> str:
+    """Executes a single processing turn and returns a text string response."""
+    server_script = Path(__file__).parent / "mcp_server.py"
+    server_params = StdioServerParameters(
+        command=sys.executable or "python", 
+        args=[str(server_script)], 
+        env=os.environ.copy()
+    )
+    contextualized_prompt = f"[Context: User Employee ID is {employee_id}] {user_prompt}"
+    
+    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            tools_response = await session.list_tools()
+            
+            function_declarations = [_mcp_tool_to_gemini_declaration(t) for t in tools_response.tools]
+            client = genai.Client()
+            config = types.GenerateContentConfig(
+                tools=[types.Tool(function_declarations=function_declarations)] if function_declarations else None,
+                system_instruction="You are a professional IT Help Desk agent grounded in enterprise system history data."
+            )
+            
+            contents = [types.Content(role="user", parts=[types.Part(text=contextualized_prompt)])]
+            
+            for _ in range(MAX_TOOL_ROUNDS):
+                response = await _generate_content(client, contents, config)
+                function_calls = _extract_function_calls(response)
+                
+                if not function_calls:
+                    return getattr(response, "text", None) or "Task evaluated successfully without text commentary."
+                
+                contents.append(response.candidates[0].content)
+                function_response_parts = []
+                
+                for call in function_calls:
+                    try:
+                        tool_result = await session.call_tool(call.name, arguments=dict(call.args or {}))
+                        jsonable_result = _mcp_tool_result_to_jsonable(tool_result)
+                        function_response_parts.append(
+                            types.Part(function_response=types.FunctionResponse(name=call.name, response={"result": jsonable_result}))
+                        )
+                    except Exception as e:
+                        function_response_parts.append(
+                            types.Part(function_response=types.FunctionResponse(name=call.name, response={"error": str(e)}))
+                        )
+                contents.append(types.Content(role="tool", parts=function_response_parts))
+            return "Processing loop completed."
+
+
 async def main() -> None:
     """Launch the MCP server, connect Gemini to its tools, and start the CLI loop."""
     load_dotenv()
@@ -360,4 +413,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

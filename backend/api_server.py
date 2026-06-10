@@ -10,15 +10,20 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
-
+# Automatically find and safely pull secrets from your local .env file
 load_dotenv(find_dotenv())
+
+# Read connection string dynamically from environment variables
 MONGODB_URI = os.getenv("MONGODB_URI")
 
 if not MONGODB_URI:
-    raise RuntimeError("Missing required environment variable: MONGODB_URI")
+    raise RuntimeError(
+        "Missing required environment variable: MONGODB_URI. "
+        "Please check that it is defined inside your local .env file."
+    )
 
 client = MongoClient(MONGODB_URI)
-db = client.it_helpdesk_db # Ensuring this points to the correct master database
+db = client.it_helpdesk_db  # Ensuring this points to the correct master database
 alerts_collection = db.System_Alerts
 notifications_collection = db.User_Notifications
 

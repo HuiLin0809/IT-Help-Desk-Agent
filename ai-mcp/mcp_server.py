@@ -1,256 +1,428 @@
 """
-IT Help Desk MCP Server
+Main Gemini + MCP Orchestrator
 
-This server exposes MongoDB-backed tools for an AI IT Help Desk Agent.
+This script launches a local MCP server named `mcp_server.py`, discovers its
+tools, exposes those tools to Gemini, and runs a simple command-line chat loop.
 
-Requirements:
-    pip install "mcp[cli]" pymongo python-dotenv
+Expected project layout:
+    your_project/
+      main_agent.py
+      mcp_server.py
+      .env
 
-Environment:
-    MONGODB_URI="mongodb+srv://<user>:<password>@<cluster-url>/?retryWrites=true&w=majority"
+Required packages:
+    pip install google-genai mcp python-dotenv
+
+Required .env value:
+    GEMINI_API_KEY="your-gemini-api-key"
 
 Run:
-    python it_helpdesk_mcp_server.py
-
-Typical MCP client/router configuration:
-    {
-      "mcpServers": {
-        "it-helpdesk-hands": {
-          "command": "python",
-          "args": ["/absolute/path/to/it_helpdesk_mcp_server.py"],
-          "env": {
-            "MONGODB_URI": "mongodb+srv://..."
-          }
-        }
-      }
-    }
+    python main_agent.py
 """
 
 from __future__ import annotations
 
-import logging
+import asyncio
+import json
 import os
-from datetime import datetime, timezone
+import re
+import sys
+from pathlib import Path
 from typing import Any
 
-from bson import json_util
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
-from pymongo import MongoClient
-from pymongo.collection import Collection
-from pymongo.database import Database
-from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
-from pymongo.server_api import ServerApi
+from google import genai
+from google.genai import types
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 
-DATABASE_NAME = "IT_HelpDesk"
-USERS_DEVICES_COLLECTION = "Users_Devices"
-MAINTENANCE_LOGS_COLLECTION = "Maintenance_Logs"
-DEFAULT_DEVICE_QUERY_LIMIT = 10
-
-
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-)
-logger = logging.getLogger("it_helpdesk_mcp")
-
-
-load_dotenv()
-
-mcp = FastMCP(
-    name="it-helpdesk-hands",
-    instructions=(
-        "Tools for reading employee device health from MongoDB Atlas and "
-        "escalating hardware maintenance tickets for human technicians."
-    ),
-)
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+MAX_TOOL_ROUNDS = 8
 
 
 def _require_env(name: str) -> str:
-    """Return a required environment variable or fail fast with a useful error."""
+    """Fail early with a clear error when a required environment variable is missing."""
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
 
 
-def _create_mongo_client() -> MongoClient:
-    """
-    Create a MongoDB Atlas client.
+def _schema_to_dict(schema: Any) -> dict[str, Any]:
+    """Convert MCP/Pydantic schema objects into plain dictionaries."""
+    if schema is None:
+        return {"type": "object", "properties": {}}
+    if isinstance(schema, dict):
+        return schema
+    if hasattr(schema, "model_dump"):
+        return schema.model_dump(by_alias=True, exclude_none=True)
+    return dict(schema)
 
-    server_api=ServerApi("1") pins the driver to MongoDB Stable API v1, which is
-    recommended for Atlas-backed applications that need predictable behavior.
+
+def _sanitize_schema_for_gemini(schema: Any) -> Any:
     """
-    uri = _require_env("MONGODB_URI")
-    client: MongoClient = MongoClient(
-        uri,
-        server_api=ServerApi("1"),
-        serverSelectionTimeoutMS=int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")),
-        connectTimeoutMS=int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "5000")),
-        retryWrites=True,
+    Trim JSON Schema features that commonly appear in MCP schemas but are not
+    part of Gemini's function declaration subset.
+
+    FastMCP often emits optional strings as anyOf: [{type: string}, {type: null}].
+    Gemini does not need the nullable branch when the field is absent from
+    `required`, so this function keeps the concrete branch.
+    """
+    if isinstance(schema, list):
+        return [_sanitize_schema_for_gemini(item) for item in schema]
+
+    if not isinstance(schema, dict):
+        return schema
+
+    schema = dict(schema)
+
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.pop(union_key, None)
+        if variants:
+            non_null_variants = [
+                variant for variant in variants if variant.get("type") != "null"
+            ]
+            if len(non_null_variants) == 1:
+                merged = {**schema, **non_null_variants[0]}
+                return _sanitize_schema_for_gemini(merged)
+
+    for unsupported_key in (
+        "$schema",
+        "$defs",
+        "definitions",
+        "additionalProperties",
+        "title",
+        "default",
+    ):
+        schema.pop(unsupported_key, None)
+
+    if "properties" in schema:
+        schema["properties"] = {
+            name: _sanitize_schema_for_gemini(property_schema)
+            for name, property_schema in schema["properties"].items()
+        }
+
+    if "items" in schema:
+        schema["items"] = _sanitize_schema_for_gemini(schema["items"])
+
+    return schema
+
+
+def _mcp_tool_to_gemini_declaration(tool: Any) -> types.FunctionDeclaration:
+    """Translate one MCP tool definition into one Gemini function declaration."""
+    input_schema = getattr(tool, "inputSchema", None)
+    if input_schema is None:
+        input_schema = getattr(tool, "input_schema", None)
+
+    parameters = _sanitize_schema_for_gemini(_schema_to_dict(input_schema))
+    parameters.setdefault("type", "object")
+    parameters.setdefault("properties", {})
+
+    return types.FunctionDeclaration(
+        name=tool.name,
+        description=tool.description or f"MCP tool: {tool.name}",
+        parameters=parameters,
     )
 
-    try:
-        client.admin.command("ping")
-    except ServerSelectionTimeoutError as exc:
-        raise RuntimeError("Could not connect to MongoDB Atlas within the timeout window.") from exc
-    except PyMongoError as exc:
-        raise RuntimeError("MongoDB Atlas connection check failed.") from exc
 
-    logger.info("Connected to MongoDB Atlas database %s", DATABASE_NAME)
-    return client
+def _extract_function_calls(response: Any) -> list[Any]:
+    """Return all function calls Gemini requested in this model turn."""
+    if getattr(response, "function_calls", None):
+        return list(response.function_calls)
 
-
-mongo_client = _create_mongo_client()
-db: Database = mongo_client[DATABASE_NAME]
-users_devices: Collection = db[USERS_DEVICES_COLLECTION]
-maintenance_logs: Collection = db[MAINTENANCE_LOGS_COLLECTION]
-
-
-def _clean_optional_string(value: str | None, field_name: str) -> str | None:
-    """Normalize optional string input from LLM tool calls."""
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string.")
-
-    cleaned = value.strip()
-    return cleaned or None
+    calls: list[Any] = []
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            function_call = getattr(part, "function_call", None)
+            if function_call:
+                calls.append(function_call)
+    return calls
 
 
-def _to_pretty_json(document: Any) -> str:
-    """Serialize MongoDB/BSON values, including ObjectId and datetime, as JSON."""
-    return json_util.dumps(document, indent=2, ensure_ascii=False)
+def _mcp_tool_result_to_jsonable(result: Any) -> dict[str, Any]:
+    """Convert an MCP call result into a compact JSON-serializable object."""
+    content_items: list[dict[str, Any]] = []
 
+    for item in getattr(result, "content", []) or []:
+        if hasattr(item, "model_dump"):
+            content_items.append(item.model_dump(by_alias=True, exclude_none=True))
+        elif hasattr(item, "text"):
+            content_items.append({"type": "text", "text": item.text})
+        else:
+            content_items.append({"type": type(item).__name__, "value": str(item)})
 
-@mcp.tool()
-def get_device_health(employee_id: str | None = None, device_model: str | None = None) -> str:
-    """
-    Return employee device hardware specifications and historical health timeline.
-
-    Args:
-        employee_id: Exact employee identifier to look up.
-        device_model: Exact device model to look up.
-
-    Returns:
-        A formatted JSON string containing the matching device document. If only
-        device_model is supplied and multiple employees use that model, up to 10
-        matching documents are returned to avoid accidentally streaming an entire
-        collection to the LLM.
-    """
-    employee_id = _clean_optional_string(employee_id, "employee_id")
-    device_model = _clean_optional_string(device_model, "device_model")
-
-    if not employee_id and not device_model:
-        return (
-            "Error: Provide at least one lookup parameter: employee_id or device_model."
-        )
-
-    query: dict[str, str] = {}
-    if employee_id:
-        query["employee_id"] = employee_id
-    if device_model:
-        query["device_model"] = device_model
-
-    try:
-        if employee_id:
-            document = users_devices.find_one(query)
-            if document is None:
-                return _to_pretty_json(
-                    {
-                        "found": False,
-                        "message": "No device health record matched the supplied criteria.",
-                        "query": query,
-                    }
-                )
-            return _to_pretty_json(document)
-
-        documents = list(users_devices.find(query).limit(DEFAULT_DEVICE_QUERY_LIMIT))
-        return _to_pretty_json(
-            {
-                "found": bool(documents),
-                "count": len(documents),
-                "limit": DEFAULT_DEVICE_QUERY_LIMIT,
-                "query": query,
-                "documents": documents,
-            }
-        )
-    except PyMongoError as exc:
-        logger.exception("MongoDB read failed for query: %s", query)
-        return f"Error: MongoDB read failed: {exc}"
-
-
-@mcp.tool()
-def escalate_hardware_ticket(
-    employee_id: str,
-    device_model: str,
-    ai_diagnostic_summary: str,
-) -> str:
-    """
-    Create an escalated hardware maintenance ticket for a human technician.
-
-    Args:
-        employee_id: Employee identifier associated with the faulty device.
-        device_model: Device model needing human inspection or repair.
-        ai_diagnostic_summary: Concise bulleted summary of failed troubleshooting
-            steps and observed symptoms. This is stored directly in the ticket so
-            technicians do not need to inspect chat logs.
-
-    Returns:
-        A success message containing the inserted ticket _id.
-    """
-    cleaned_employee_id = _clean_optional_string(employee_id, "employee_id")
-    cleaned_device_model = _clean_optional_string(device_model, "device_model")
-    cleaned_ai_diagnostic_summary = _clean_optional_string(
-        ai_diagnostic_summary,
-        "ai_diagnostic_summary",
-    )
-
-    missing_fields = [
-        field_name
-        for field_name, value in {
-            "employee_id": cleaned_employee_id,
-            "device_model": cleaned_device_model,
-            "ai_diagnostic_summary": cleaned_ai_diagnostic_summary,
-        }.items()
-        if not value
-    ]
-    if missing_fields:
-        return f"Error: Missing required field(s): {', '.join(missing_fields)}."
-
-    assert cleaned_employee_id is not None
-    assert cleaned_device_model is not None
-    assert cleaned_ai_diagnostic_summary is not None
-
-    ticket = {
-        "employee_id": cleaned_employee_id,
-        "device_model": cleaned_device_model,
-        "status": "Escalated",
-        "ai_diagnostic_summary": cleaned_ai_diagnostic_summary,
-        "created_at": datetime.now(timezone.utc),
-        "source": "AI IT Help Desk Agent",
+    return {
+        "is_error": bool(getattr(result, "isError", False) or getattr(result, "is_error", False)),
+        "content": content_items,
     }
 
-    try:
-        result = maintenance_logs.insert_one(ticket)
-        ticket_id = str(result.inserted_id)
-        logger.info(
-            "Created escalated hardware ticket %s for employee_id=%s device_model=%s",
-            ticket_id,
-            cleaned_employee_id,
-            cleaned_device_model,
+
+def _extract_employee_id(message: str) -> str | None:
+    """Best-effort employee ID parser for quota-safe demo fallback."""
+    match = re.search(r"\bE\d+\b", message, flags=re.IGNORECASE)
+    return match.group(0).upper() if match else None
+
+
+def _extract_device_model(message: str) -> str | None:
+    """Best-effort device model parser for common demo hardware names."""
+    known_models = ["Dell XPS 15", "Dell XPS", "MacBook Pro", "ThinkPad", "Surface Pro"]
+    lower_message = message.lower()
+    for model in known_models:
+        if model.lower() in lower_message:
+            return model
+    return None
+
+
+def _build_escalation_summary(message: str) -> str:
+    """Create a concise technician hand-off summary without calling Gemini."""
+    return (
+        "- User requested hardware escalation.\n"
+        f"- User report: {message}\n"
+        "- Basic restart/software troubleshooting did not resolve the issue.\n"
+        "- Physical hardware damage suspected; human technician inspection required."
+    )
+
+
+async def _try_quota_safe_fallback(session: ClientSession, user_message: str) -> bool:
+    """Call MCP directly for obvious demo escalations when Gemini quota is unavailable."""
+    lower_message = user_message.lower()
+    wants_escalation = "escalate" in lower_message or "ticket" in lower_message
+    if not wants_escalation:
+        return False
+
+    employee_id = _extract_employee_id(user_message)
+    device_model = _extract_device_model(user_message)
+    if not employee_id or not device_model:
+        print(
+            "\nAgent: Gemini is unavailable, and I could not safely extract employee_id/device_model for fallback escalation.\n"
         )
-        return f"Success: Escalated hardware ticket created with _id: {ticket_id}"
-    except PyMongoError as exc:
-        logger.exception(
-            "MongoDB write failed while escalating ticket for employee_id=%s",
-            cleaned_employee_id,
+        return True
+
+    tool_args = {
+        "employee_id": employee_id,
+        "device_model": device_model,
+        "ai_diagnostic_summary": _build_escalation_summary(user_message),
+    }
+    print("\n[Fallback tool call] escalate_hardware_ticket")
+    tool_result = await session.call_tool("escalate_hardware_ticket", arguments=tool_args)
+    jsonable_result = _mcp_tool_result_to_jsonable(tool_result)
+    print(f"[Fallback tool result] {json.dumps(jsonable_result, ensure_ascii=False)}")
+    print(
+        "\nAgent: Gemini quota is unavailable, so I used the fallback demo path and escalated the ticket through MCP.\n"
+    )
+    return True
+
+
+def _print_response_text(response: Any) -> None:
+    """Print Gemini's final user-facing response, with a small fallback."""
+    text = getattr(response, "text", None)
+    if text:
+        print(f"\nAgent: {text}\n")
+        return
+
+    parts = []
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            if getattr(part, "text", None):
+                parts.append(part.text)
+
+    print(f"\nAgent: {' '.join(parts) if parts else '[No text response returned.]'}\n")
+
+
+async def _generate_content(
+    client: genai.Client,
+    contents: Any,
+    config: types.GenerateContentConfig,
+) -> Any:
+    """
+    Run the synchronous google-genai call in a worker thread so the async MCP
+    session remains responsive while Gemini is thinking.
+    """
+    return await asyncio.to_thread(
+        client.models.generate_content,
+        model=MODEL_NAME,
+        contents=contents,
+        config=config,
+    )
+
+
+async def process_user_message(
+    client: genai.Client,
+    session: ClientSession,
+    config: types.GenerateContentConfig,
+    user_message: str,
+) -> None:
+    """Send one user message to Gemini and fulfill any MCP tool calls it requests."""
+    contents: list[Any] = [
+        types.Content(role="user", parts=[types.Part(text=user_message)])
+    ]
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        response = await _generate_content(client, contents, config)
+        function_calls = _extract_function_calls(response)
+
+        if not function_calls:
+            _print_response_text(response)
+            return
+
+        model_content = response.candidates[0].content
+        contents.append(model_content)
+
+        function_response_parts: list[types.Part] = []
+        for function_call in function_calls:
+            tool_name = function_call.name
+            tool_args = dict(function_call.args or {})
+
+            print(f"\n[Tool call] {tool_name}({json.dumps(tool_args, ensure_ascii=False)})")
+            tool_result = await session.call_tool(tool_name, arguments=tool_args)
+            jsonable_result = _mcp_tool_result_to_jsonable(tool_result)
+            print(f"[Tool result] {json.dumps(jsonable_result, ensure_ascii=False)}")
+
+            response_kwargs: dict[str, Any] = {
+                "name": tool_name,
+                "response": {"result": jsonable_result},
+            }
+            call_id = getattr(function_call, "id", None)
+            if call_id:
+                response_kwargs["id"] = call_id
+
+            function_response_parts.append(
+                types.Part(
+                    function_response=types.FunctionResponse(**response_kwargs)
+                )
+            )
+
+        contents.append(types.Content(role="tool", parts=function_response_parts))
+
+    print(
+        f"\nAgent: I stopped after {MAX_TOOL_ROUNDS} tool round(s) to avoid an infinite loop.\n"
+    )
+
+
+# =====================================================================
+# 🚀 ADDED: BRIDGE FUNCTION FOR THE WEB FRONTEND & API SERVER
+# =====================================================================
+async def run_agent_turn_anonymous(user_prompt: str, employee_id: str = "E1402") -> str:
+    """
+    Executes a single processing turn with system context injection to force
+    proactive database tool calls based on the active user identity.
+    """
+    server_script = Path(__file__).parent / "mcp_server.py"
+    server_params = StdioServerParameters(
+        command=sys.executable or "python", 
+        args=[str(server_script)], 
+        env=os.environ.copy()
+    )
+    
+    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            tools_response = await session.list_tools()
+            
+            function_declarations = [_mcp_tool_to_gemini_declaration(t) for t in tools_response.tools]
+            client = genai.Client()
+            
+            # Grounding instruction tells Gemini who is speaking and forces it to check the db via tools
+            system_instruction = (
+                f"You are a professional IT Help Desk agent for Group 4 grounded in enterprise database logs.\n"
+                f"CRITICAL SYSTEM PARAMETERS:\n"
+                f"1. The current user chatting with you has Employee ID: {employee_id}.\n"
+                f"2. Before answering any technical question or complaint, you MUST call the `get_device_health` tool "
+                f"with employee_id='{employee_id}' to retrieve their device information from MongoDB Atlas.\n"
+                f"3. Base your diagnostics and response on the retrieved device state information."
+            )
+            
+            config = types.GenerateContentConfig(
+                tools=[types.Tool(function_declarations=function_declarations)] if function_declarations else None,
+                system_instruction=system_instruction
+            )
+            
+            contents = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
+            
+            for _ in range(MAX_TOOL_ROUNDS):
+                response = await _generate_content(client, contents, config)
+                function_calls = _extract_function_calls(response)
+                
+                if not function_calls:
+                    return getattr(response, "text", None) or "Task evaluated successfully without text commentary."
+                
+                contents.append(response.candidates[0].content)
+                function_response_parts = []
+                
+                for call in function_calls:
+                    try:
+                        tool_result = await session.call_tool(call.name, arguments=dict(call.args or {}))
+                        jsonable_result = _mcp_tool_result_to_jsonable(tool_result)
+                        function_response_parts.append(
+                            types.Part(function_response=types.FunctionResponse(name=call.name, response={"result": jsonable_result}))
+                        )
+                    except Exception as e:
+                        function_response_parts.append(
+                            types.Part(function_response=types.FunctionResponse(name=call.name, response={"error": str(e)}))
+                        )
+                contents.append(types.Content(role="tool", parts=function_response_parts))
+            return "Processing loop completed."
+
+
+async def main() -> None:
+    """Launch the MCP server, connect Gemini to its tools, and start the CLI loop."""
+    load_dotenv()
+    _require_env("GEMINI_API_KEY")
+
+    client = genai.Client()
+
+    server_script = Path(__file__).with_name("mcp_server.py")
+    if not server_script.exists():
+        raise FileNotFoundError(
+            f"Expected MCP server at {server_script}. Put mcp_server.py next to main_agent.py."
         )
-        return f"Error: MongoDB write failed: {exc}"
+
+    server_params = StdioServerParameters(
+        command=sys.executable or "python",
+        args=[str(server_script)],
+        env=os.environ.copy(),
+    )
+
+    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+
+            tools_response = await session.list_tools()
+            function_declarations = [
+                _mcp_tool_to_gemini_declaration(tool)
+                for tool in tools_response.tools
+            ]
+
+            print(
+                "Connected to MCP server with tools:",
+                ", ".join(declaration.name or "" for declaration in function_declarations),
+            )
+
+            gemini_tools = types.Tool(function_declarations=function_declarations)
+            config = types.GenerateContentConfig(tools=[gemini_tools])
+
+            print("Type your IT help desk request. Use 'exit' or 'quit' to stop.\n")
+            while True:
+                user_message = (await asyncio.to_thread(input, "You: ")).strip()
+                if user_message.lower() in {"exit", "quit"}:
+                    print("Goodbye.")
+                    return
+                if not user_message:
+                    continue
+
+                try:
+                    await process_user_message(client, session, config, user_message)
+                except KeyboardInterrupt:
+                    print("\nGoodbye.")
+                    return
+                except Exception as exc:
+                    handled = await _try_quota_safe_fallback(session, user_message)
+                    if not handled:
+                        print(f"\nAgent error: {exc}\n")
 
 
 if __name__ == "__main__":
-    # Default stdio transport lets a router agent launch this script as a child
-    # process and call get_device_health / escalate_hardware_ticket over MCP.
-    mcp.run()
+    asyncio.run(main())
