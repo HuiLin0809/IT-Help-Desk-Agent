@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 from mcp import ClientSession
 
-load_dotenv()
+
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 MAX_TOOL_ROUNDS = 8
 
