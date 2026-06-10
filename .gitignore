@@ -1,1 +1,8 @@
+# Sensitive API keys and database credentials
 .env
+.env.local
+
+# Python environment and cache folders
+__pycache__/
+*.pyc
+.venv/
