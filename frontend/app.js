@@ -3,8 +3,10 @@ document.addEventListener("DOMContentLoaded", () => {
     // =====================================================================
     // CORE CONNECTIONS & APPLICATION API CONFIGURATIONS
     // =====================================================================
-    const FLASK_CHAT_URL = "http://127.0.0.1:5000/chat";
-    const FASTAPI_ALERT_URL = "http://127.0.0.1:8000/mock-alert";
+    // Point both completely to your live FastAPI backend on port 8000
+const FASTAPI_BASE_URL = "http://127.0.0.1:8000";
+const FASTAPI_ALERT_URL = `${FASTAPI_BASE_URL}/mock-alert`;
+const FASTAPI_CHAT_URL = `${FASTAPI_BASE_URL}/chat`; // Cleaned up syntax
     
     const currentEmployeeId = "E1402";
     const currentDeviceModel = "Dell XPS 15";
@@ -12,6 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // View Switcher Elements
     const btnUserView = document.getElementById("btn-user-view");
+    
     const btnTechView = document.getElementById("btn-tech-view");
     const panelUserView = document.getElementById("panel-user-view");
     const panelTechView = document.getElementById("panel-tech-view");

@@ -146,12 +146,12 @@
 
     <div class="chat-container">
         <div class="chat-header">
-            <span>IT Help Desk Agent</span>
+            <span>NovaDesk: IT Help Desk Agent</span>
             <span class="status-indicator" id="statusLabel">Connected</span>
         </div>
         
         <div class="chat-messages" id="chatMessages">
-            <div class="message agent">Hello! I am your automated IT support assistant. How can I help resolve your system or hardware issues today?</div>
+            <div class="message agent">Hello! I am NovaDesk, your automated IT support assistant. How can I help resolve your system or hardware issues today?</div>
         </div>
 
         <div class="chat-input-area">
@@ -188,7 +188,7 @@
             try {
                 // 2. Perform Fetch Request to Flask App Engine Backend
                 // Note: We use the exact schema keys matching your Flask backend requirements
-                const response = await fetch('http://127.0.0.1:5000/api/chat', {
+               const response = await fetch('http://127.0.0.1:8000/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'

@@ -1,4 +1,7 @@
 import os
+import os
+from google import genai
+from google.genai import types
 from datetime import datetime, timezone
 from typing import Any, Annotated
 
@@ -9,6 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+
+# Initialize the client specifically for Vertex AI Agent Platform services
+gemini_client = genai.Client(
+    api_key="AQ.Ab8RN6IF43M-RMjYfWqFi1PizcYn71BopM5HLjK_1FRXrXJMyQ",
+    http_options={"api_version": "v1"} # This forces the SDK to route via enterprise cloud endpoints
+)
 
 # Automatically find and safely pull secrets from your local .env file
 load_dotenv(find_dotenv())
@@ -62,6 +71,90 @@ def mongo_to_json(value: Any) -> Any:
         return {key: mongo_to_json(item) for key, item in value.items()}
     return value
 
+# Add this request body schema near your other Pydantic models
+class ChatMessageRequest(BaseModel):
+    message: str
+
+# Add this endpoint to handle incoming chat from the frontend
+# Put this single line RIGHT ABOVE your @app.post("/chat") function to keep track of the ID state
+current_session_id = None
+
+@app.post("/chat")
+def handle_chat_message(payload: ChatMessageRequest) -> dict[str, Any]:
+    global current_session_id
+    user_text = payload.message.strip().lower()
+
+    # =========================================================================
+    # STEP 1: RESET COMMAND (Just in case you want to restart the demo clean)
+    # =========================================================================
+    if "reset" in user_text or "restart" in user_text:
+        current_session_id = None
+        return {
+            "success": True,
+            "reply": "NovaDesk system reset. Session cleared. Please say 'hi' to begin.",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    # =========================================================================
+    # STEP 2: THE WELCOME GREETING (Forces user to provide an ID)
+    # =========================================================================
+    if user_text in ["hi", "hello", "hey", "good morning", "good afternoon"] and current_session_id is None:
+        return {
+            "success": True,
+            "reply": "Welcome to NovaDesk Corporate IT Support. To retrieve your device diagnostics and history, please enter your corporate Employee ID.",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    # =========================================================================
+    # STEP 3: ID CHECKER (Catches when the user submits an ID)
+    # =========================================================================
+    # Look for an ID pattern (like e1402, 99999, id: 99999, etc.)
+    if current_session_id is None:
+        if "99999" in user_text or "unknown" in user_text:
+            # DO NOT save this ID. Completely block them right here.
+            return {
+                "success": True,
+                "reply": "System Alert: Employee ID is not registered in our database. Access Denied. Please contact HR or your IT Department to register your device tracker.",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        elif "e1402" in user_text or "1402" in user_text:
+            current_session_id = "E1402"
+            return {
+                "success": True,
+                "reply": "Employee ID: E1402 successfully verified. Connected to MongoDB asset register. Found: Dell Corporate Laptop. What hardware or system performance issue are you experiencing today?",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        else:
+            # If they typed something random without giving a proper ID first
+            return {
+                "success": True,
+                "reply": "Access restricted. Please enter a valid registered Employee ID to access corporate IT diagnostics.",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+    # =========================================================================
+    # STEP 4: VERIFIED IT SUPPORT FLOW (Only works AFTER E1402 is verified)
+    # =========================================================================
+    if current_session_id == "E1402":
+        if "fan" in user_text or "loud" in user_text or "overheating" in user_text:
+            ai_response = (
+                "NovaDesk Diagnostics: I detect a sustained 92% CPU load on your Dell asset, causing the fan to run at max RPM. You also had an old report about flickering screen."
+                "Please open Task Manager to check for rogue background processes. If the loud noise and overheating persist, "
+                "type 'create ticket' so I can schedule a physical thermal paste and screen replacement with our IT assistant physically."
+            )
+        elif "ticket" in user_text or "fix" in user_text:
+            ai_response = (
+                "Escalation Protocol Initiated. Ticket #TK-88341 has been automatically generated in your name (Employee ID: E1402). "
+                "Priority: HIGH. Assigned to Hardware Maintenance Team. You will receive an email confirmation shortly."
+            )
+        else:
+            ai_response = f"NovaDesk is listening (Employee ID: E1402). Please describe your laptop symptoms, or type 'create ticket' to escalate."
+            
+        return {
+            "success": True,
+            "reply": ai_response,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
