@@ -15,7 +15,7 @@ from pymongo.errors import PyMongoError
 
 # Initialize the client specifically for Vertex AI Agent Platform services
 gemini_client = genai.Client(
-    api_key="AQ.Ab8RN6IF43M-RMjYfWqFi1PizcYn71BopM5HLjK_1FRXrXJMyQ",
+    api_key = "YOUR_GCP_API_KEY_HERE" # Removed for security
     http_options={"api_version": "v1"} # This forces the SDK to route via enterprise cloud endpoints
 )
 
